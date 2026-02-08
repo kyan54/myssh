@@ -2,6 +2,10 @@
 
 WSL SSH 服务器快速连接工具，支持模糊搜索、sshpass 连接和 WinSCP 文件管理。
 
+## 演示
+
+![演示截图](images/image.png)
+
 ## 安装
 
 ### 1. 安装依赖
