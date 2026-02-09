@@ -20,6 +20,12 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
+# 列宽配置（用于表格对齐）
+LABEL_W=20
+HOST_W=17
+PORT_W=7
+USER_W=17
+
 # =============================================================================
 # 工具函数
 # =============================================================================
@@ -57,13 +63,87 @@ display_width() {
     echo $width
 }
 
+# 初始化列宽（根据终端宽度动态调整标签列，避免被截断过多）
+init_column_widths() {
+    local term_cols
+    term_cols=$(tput cols 2>/dev/null || echo 120)
+    local content_cols=$((term_cols - 4)) # 预留指示符和边距
+    local sep_w=9  # " │ " * 3
+    local min_label=16
+    local max_label=60
+
+    local label_w=$((content_cols - HOST_W - PORT_W - USER_W - sep_w))
+    if ((label_w < min_label)); then
+        label_w=$min_label
+    elif ((label_w > max_label)); then
+        label_w=$max_label
+    fi
+    LABEL_W=$label_w
+}
+
+# 重复字符
+repeat_char() {
+    local count="$1"
+    local char="$2"
+    local out=""
+    for ((i=0; i<count; i++)); do
+        out+="$char"
+    done
+    printf '%s' "$out"
+}
+
+# 生成 fzf 表头
+build_fzf_header() {
+    local title="🔍 MySsh - 服务器快速连接 (输入关键字搜索, Enter确认, Esc退出)"
+    local col_header
+    col_header=$(printf "%s │ %s │ %s │ %s" \
+        "$(pad_string "标签" "$LABEL_W")" \
+        "$(pad_string "服务器IP" "$HOST_W")" \
+        "$(pad_string "端口" "$PORT_W")" \
+        "$(pad_string "用户名" "$USER_W")")
+    local sep_line
+    sep_line=$(printf "%s─┼─%s─┼─%s─┼─%s" \
+        "$(repeat_char "$LABEL_W" "─")" \
+        "$(repeat_char "$HOST_W" "─")" \
+        "$(repeat_char "$PORT_W" "─")" \
+        "$(repeat_char "$USER_W" "─")")
+
+    printf "%s\n%s\n%s" "$title" "$col_header" "$sep_line"
+}
+
+# 截断字符串到指定显示宽度
+truncate_string() {
+    local str="$1"
+    local max_width="$2"
+    local width=0
+    local char char_w out=""
+
+    for ((i=0; i<${#str}; i++)); do
+        char="${str:i:1}"
+        if [[ $(printf '%s' "$char" | wc -c) -gt 1 ]]; then
+            char_w=2
+        else
+            char_w=1
+        fi
+        if (( width + char_w > max_width )); then
+            break
+        fi
+        width=$((width + char_w))
+        out+="$char"
+    done
+    printf '%s' "$out"
+}
+
 # 按指定宽度填充字符串
 pad_string() {
     local str="$1"
     local target_width="$2"
-    local current_width=$(display_width "$str")
+    local truncated
+    truncated=$(truncate_string "$str" "$target_width")
+    local current_width
+    current_width=$(display_width "$truncated")
     local padding=$((target_width - current_width))
-    printf '%s' "$str"
+    printf '%s' "$truncated"
     if [[ $padding -gt 0 ]]; then
         printf '%*s' "$padding" ''
     fi
@@ -140,13 +220,19 @@ load_servers() {
 format_server_list() {
     local index=1
     while IFS='|' read -r label host port user pass; do
-        printf "%-3s │ %-20s │ %-15s │ %-5s │ %s\n" "$index" "$label" "$host" "$port" "$user"
+        printf "%-3s │ %s │ %s │ %s │ %s\n" \
+            "$index" \
+            "$(pad_string "$label" "$LABEL_W")" \
+            "$(pad_string "$host" "$HOST_W")" \
+            "$(pad_string "$port" "$PORT_W")" \
+            "$(pad_string "$user" "$USER_W")"
         ((index++))
     done
 }
 
 # 使用 fzf 选择服务器
 select_server_with_fzf() {
+    init_column_widths
     local servers
     servers=$(load_servers)
     
@@ -157,16 +243,21 @@ select_server_with_fzf() {
     
     # 创建带格式的显示列表
     local formatted
+    local index=1
     formatted=$(echo "$servers" | while IFS='|' read -r label host port user pass; do
-        printf '%s │ %-15s │ %-5s │ %s\n' "$(pad_string "$label" 20)" "$host" "$port" "$user"
+        local display
+        display=$(printf '%s │ %s │ %s │ %s' \
+            "$(pad_string "$label" "$LABEL_W")" \
+            "$(pad_string "$host" "$HOST_W")" \
+            "$(pad_string "$port" "$PORT_W")" \
+            "$(pad_string "$user" "$USER_W")")
+        printf '%s\t%s\t%s\n' "$index" "$label" "$display"
+        ((index++))
     done)
     
     # 使用 fzf 进行模糊搜索
-    local header="┌──────────────────────────────────────────────────────────────┐
-│  🔍 MySsh - 服务器快速连接 (输入关键字搜索, Enter确认, Esc退出) │
-├────────────────────┬─────────────────┬───────┬─────────────────┤
-│ 标签               │ 服务器IP        │ 端口  │ 用户名          │
-├────────────────────┼─────────────────┼───────┼─────────────────┤"
+    local header
+    header=$(build_fzf_header)
     
     local selected_line
     selected_line=$(echo "$formatted" | fzf \
@@ -181,16 +272,18 @@ select_server_with_fzf() {
         --preview-window=hidden \
         --bind="enter:accept" \
         --bind="esc:abort" \
+        --delimiter=$'\t' \
+        --with-nth=3 \
+        --nth=2.. \
         --no-info)
     
     if [[ -z "$selected_line" ]]; then
         return 1
     fi
     
-    # 根据选中的行找回完整数据
+    # 根据选中的行索引找回完整数据
     local line_index
-    line_index=$(echo "$formatted" | grep -nF "$selected_line" | head -1 | cut -d: -f1)
-    
+    line_index=$(printf '%s' "$selected_line" | cut -f1)
     echo "$servers" | sed -n "${line_index}p"
 }
 
@@ -261,13 +354,19 @@ show_help() {
 
 # 列出服务器
 list_servers() {
+    init_column_widths
     check_servers_file
     
     echo ""
     echo -e "${BOLD}服务器列表${NC} (${SERVERS_FILE})"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf "${CYAN}%-3s │ %-20s │ %-15s │ %-5s │ %s${NC}\n" "#" "标签" "服务器IP" "端口" "用户名"
-    echo "────┼──────────────────────┼─────────────────┼───────┼─────────"
+    printf "${CYAN}%-3s │ %s │ %s │ %s │ %s${NC}\n" \
+        "#" \
+        "$(pad_string "标签" "$LABEL_W")" \
+        "$(pad_string "服务器IP" "$HOST_W")" \
+        "$(pad_string "端口" "$PORT_W")" \
+        "$(pad_string "用户名" "$USER_W")"
+    echo "────┼$(repeat_char "$LABEL_W" "─")┼$(repeat_char "$HOST_W" "─")┼$(repeat_char "$PORT_W" "─")┼$(repeat_char "$USER_W" "─")"
     load_servers | format_server_list
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
