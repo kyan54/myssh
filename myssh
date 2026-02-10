@@ -251,7 +251,7 @@ select_server_with_fzf() {
             "$(pad_string "$host" "$HOST_W")" \
             "$(pad_string "$port" "$PORT_W")" \
             "$(pad_string "$user" "$USER_W")")
-        printf '%s\t%s\t%s\n' "$index" "$label" "$display"
+        printf '%s\t%s\n' "$display" "$index"
         ((index++))
     done)
     
@@ -273,8 +273,8 @@ select_server_with_fzf() {
         --bind="enter:accept" \
         --bind="esc:abort" \
         --delimiter=$'\t' \
-        --with-nth=3 \
-        --nth=2.. \
+        --with-nth=1 \
+        --nth=1 \
         --no-info)
     
     if [[ -z "$selected_line" ]]; then
@@ -283,7 +283,7 @@ select_server_with_fzf() {
     
     # 根据选中的行索引找回完整数据
     local line_index
-    line_index=$(printf '%s' "$selected_line" | cut -f1)
+    line_index=$(printf '%s' "$selected_line" | cut -f2)
     echo "$servers" | sed -n "${line_index}p"
 }
 
