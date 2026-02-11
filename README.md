@@ -14,6 +14,39 @@ WSL SSH 服务器快速连接工具，支持模糊搜索、sshpass 连接和 Win
 sudo apt install sshpass fzf
 ```
 
+### Windows（PowerShell）
+
+提供 `myssh.ps1`（主脚本）和 `myssh.bat`（包装器）。依赖说明：
+
+- 必需：Windows OpenSSH Client（Windows 10/11 可在“可选功能”里安装）
+- 可选：`fzf`（用于模糊搜索，未安装则回退为编号选择）
+- 可选：`MYSSH_FZF_PATH`（若 `fzf` 未在 `PATH` 中，可指定 `fzf.exe` 的完整路径）
+- 可选：`MYSSH_PLINK_PATH`（若需自动输入密码登录，建议安装 PuTTY 并指定 `plink.exe` 路径）
+- 可选：`WinSCP`（用于 `-w` 模式）
+- 可选：`plink`（PuTTY，若你在 `servers.txt` 中保存了密码并希望自动登录）
+
+示例：
+
+```powershell
+.\myssh.ps1
+.\myssh.ps1 -l
+.\myssh.ps1 -w
+```
+
+如果执行策略受限，可使用：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\myssh.ps1
+```
+
+如果中文显示乱码，可在 PowerShell 中先执行：
+
+```powershell
+chcp 65001
+```
+
+并确保 `servers.txt` 为 UTF-8 编码。
+
 ### 2. 全局安装（可选）
 
 ```bash
