@@ -198,7 +198,6 @@ check_servers_file() {
 #   2. 混合分隔: 标签名\t服务器IP 端口 账号 密码
 #   3. 纯空格分隔: 标签名 服务器IP 端口 账号 密码
 load_servers() {
-    local servers=()
     local line label host port user pass
     
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -210,10 +209,86 @@ load_servers() {
         
         # 按空格分隔读取各字段
         read -r label host port user pass <<< "$line"
-        
-        servers+=("$label|$host|$port|$user|$pass")
+
+        # 跳过格式不完整的行
+        [[ -z "$label" || -z "$host" || -z "$port" || -z "$user" || -z "$pass" ]] && continue
+
+        printf '%s|%s|%s|%s|%s\n' "$label" "$host" "$port" "$user" "$pass"
     done < "$SERVERS_FILE"
-    printf '%s\n' "${servers[@]}"
+}
+
+# 按显示宽度（兼容中文双宽字符）格式化服务器行
+# 输入: label|host|port|user|pass
+# 输出: index<TAB>格式化后的显示行
+format_servers_for_display() {
+    local label_w="$1"
+    local host_w="$2"
+    local port_w="$3"
+    local user_w="$4"
+
+    if command -v python3 &>/dev/null; then
+        python3 - "$label_w" "$host_w" "$port_w" "$user_w" 3<&0 << 'PY'
+import sys
+import unicodedata
+
+label_w, host_w, port_w, user_w = map(int, sys.argv[1:5])
+
+def char_width(ch: str) -> int:
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+def fit_text(text: str, width: int) -> str:
+    out = []
+    used = 0
+    overflow = False
+    for ch in text:
+        w = char_width(ch)
+        if used + w > width:
+            overflow = True
+            break
+        out.append(ch)
+        used += w
+
+    if overflow and width >= 3:
+        while out and used > width - 3:
+            last = out.pop()
+            used -= char_width(last)
+        out.extend("...")
+        used += 3
+
+    return "".join(out) + (" " * max(0, width - used))
+
+for idx, raw in enumerate(open(3, "r", encoding="utf-8", errors="replace"), start=1):
+    line = raw.rstrip("\n")
+    if not line:
+        continue
+    parts = line.split("|")
+    if len(parts) < 4:
+        continue
+
+    label, host, port, user = parts[0], parts[1], parts[2], parts[3]
+    row = (
+        f"{fit_text(label, label_w)} │ "
+        f"{fit_text(host, host_w)} │ "
+        f"{fit_text(port, port_w)} │ "
+        f"{fit_text(user, user_w)}"
+    )
+    print(f"{idx}\t{row}")
+PY
+    else
+        # 无 python3 时回退：按字符数对齐（中文宽度可能略有误差）
+        awk -F'|' -v label_w="$label_w" -v host_w="$host_w" -v port_w="$port_w" -v user_w="$user_w" '
+            function trunc(s, w) {
+                if (length(s) <= w) return s
+                if (w <= 3) return substr(s, 1, w)
+                return substr(s, 1, w - 3) "..."
+            }
+            {
+                printf "%d\t%-*s │ %-*s │ %-*s │ %-*s\n", NR, label_w, trunc($1, label_w), host_w, trunc($2, host_w), port_w, trunc($3, port_w), user_w, trunc($4, user_w)
+            }
+        '
+    fi
 }
 
 # 格式化显示服务器列表
@@ -241,26 +316,23 @@ select_server_with_fzf() {
         exit 1
     fi
     
-    # 创建带格式的显示列表
+    # 构建 fzf 输入：
+    #   1) 显示列：固定宽度，保证对齐
+    #   2) 搜索列：保留原始字段，避免因显示截断导致搜不到
     local formatted
-    local index=1
-    formatted=$(echo "$servers" | while IFS='|' read -r label host port user pass; do
-        local display
-        display=$(printf '%s │ %s │ %s │ %s' \
-            "$(pad_string "$label" "$LABEL_W")" \
-            "$(pad_string "$host" "$HOST_W")" \
-            "$(pad_string "$port" "$PORT_W")" \
-            "$(pad_string "$user" "$USER_W")")
-        printf '%s\t%s\n' "$display" "$index"
-        ((index++))
-    done)
+    formatted=$(paste \
+        <(printf '%s\n' "$servers" | format_servers_for_display "$LABEL_W" "$HOST_W" "$PORT_W" "$USER_W") \
+        <(printf '%s\n' "$servers" | awk -F'|' '{printf "%s\t%s\t%s\t%s\n", $1, $2, $3, $4}')
+    )
     
     # 使用 fzf 进行模糊搜索
     local header
-    header=$(build_fzf_header)
+    local header_cols
+    header_cols=$(printf '%s\n' "标签|服务器IP|端口|用户名|-" | format_servers_for_display "$LABEL_W" "$HOST_W" "$PORT_W" "$USER_W" | cut -f2-)
+    header=$(printf "🔍 MySsh - 服务器快速连接 (输入关键字搜索, Enter确认, Esc退出)\n%s" "$header_cols")
     
     local selected_line
-    selected_line=$(echo "$formatted" | fzf \
+    selected_line=$(printf '%s\n' "$formatted" | fzf \
         --header="$header" \
         --height=60% \
         --layout=reverse \
@@ -273,8 +345,7 @@ select_server_with_fzf() {
         --bind="enter:accept" \
         --bind="esc:abort" \
         --delimiter=$'\t' \
-        --with-nth=1 \
-        --nth=1 \
+        --with-nth=2 \
         --no-info)
     
     if [[ -z "$selected_line" ]]; then
@@ -283,8 +354,8 @@ select_server_with_fzf() {
     
     # 根据选中的行索引找回完整数据
     local line_index
-    line_index=$(printf '%s' "$selected_line" | cut -f2)
-    echo "$servers" | sed -n "${line_index}p"
+    line_index=$(printf '%s' "$selected_line" | cut -f1)
+    printf '%s\n' "$servers" | sed -n "${line_index}p"
 }
 
 # SSH 连接
@@ -354,21 +425,18 @@ show_help() {
 
 # 列出服务器
 list_servers() {
-    init_column_widths
     check_servers_file
     
     echo ""
     echo -e "${BOLD}服务器列表${NC} (${SERVERS_FILE})"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf "${CYAN}%-3s │ %s │ %s │ %s │ %s${NC}\n" \
-        "#" \
-        "$(pad_string "标签" "$LABEL_W")" \
-        "$(pad_string "服务器IP" "$HOST_W")" \
-        "$(pad_string "端口" "$PORT_W")" \
-        "$(pad_string "用户名" "$USER_W")"
-    echo "────┼$(repeat_char "$LABEL_W" "─")┼$(repeat_char "$HOST_W" "─")┼$(repeat_char "$PORT_W" "─")┼$(repeat_char "$USER_W" "─")"
-    load_servers | format_server_list
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local header_cols
+    header_cols=$(printf '%s\n' "标签|服务器IP|端口|用户名|-" | format_servers_for_display 20 17 7 17 | cut -f2-)
+    printf "${CYAN}%-3s │ %s${NC}\n" "#" "$header_cols"
+    printf '%s\n' "────┼──────────────────────┼───────────────────┼─────────┼───────────────────"
+    while IFS=$'\t' read -r idx row; do
+        [[ -z "$idx" ]] && continue
+        printf "%-3s │ %s\n" "$idx" "$row"
+    done < <(load_servers | format_servers_for_display 20 17 7 17)
     echo ""
 }
 
